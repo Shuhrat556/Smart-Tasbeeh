@@ -5,9 +5,18 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:smart_tasbeeh/core/constants/app_constants.dart';
 import 'package:smart_tasbeeh/core/localization/app_strings.dart';
-import 'package:smart_tasbeeh/features/tasbeeh/domain/entities/theme_preference.dart';
+import 'package:smart_tasbeeh/core/theme/app_palette.dart';
+import 'package:smart_tasbeeh/core/utils/day_key.dart';
 import 'package:smart_tasbeeh/features/tasbeeh/presentation/cubit/tasbeeh_cubit.dart';
 import 'package:smart_tasbeeh/features/tasbeeh/presentation/cubit/tasbeeh_state.dart';
+import 'package:smart_tasbeeh/features/tasbeeh/presentation/pages/tabs/qibla_tab.dart';
+import 'package:smart_tasbeeh/features/tasbeeh/presentation/pages/tabs/settings_tab.dart';
+import 'package:smart_tasbeeh/features/tasbeeh/presentation/pages/tabs/stats_tab.dart';
+import 'package:smart_tasbeeh/features/tasbeeh/presentation/pages/tabs/tasbeeh_tab.dart';
+import 'package:smart_tasbeeh/features/tasbeeh/presentation/pages/tabs/zikr_tab.dart';
+import 'package:smart_tasbeeh/features/tasbeeh/presentation/widgets/language_sheet.dart';
+import 'package:smart_tasbeeh/features/tasbeeh/presentation/widgets/premium_background.dart';
+import 'package:smart_tasbeeh/features/tasbeeh/presentation/widgets/target_sheet.dart';
 
 class TasbeehPage extends StatefulWidget {
   const TasbeehPage({super.key});
@@ -31,8 +40,18 @@ class _TasbeehPageState extends State<TasbeehPage> {
     return AppStrings.tr(state.session.localeCode, key);
   }
 
+  ZikrMeta _metaById(String zikrId) {
+    for (final ZikrMeta zikr in AppConstants.zikrs) {
+      if (zikr.id == zikrId) {
+        return zikr;
+      }
+    }
+    return AppConstants.zikrs.first;
+  }
+
   String _zikrLabel(TasbeehState state, String zikrId) {
-    return _t(state, 'zikr_$zikrId');
+    final ZikrMeta meta = _metaById(zikrId);
+    return _t(state, meta.labelKey);
   }
 
   void _increment(BuildContext context, {required bool auto}) {
@@ -68,16 +87,6 @@ class _TasbeehPageState extends State<TasbeehPage> {
   void _stopFastCount() {
     _fastCountTimer?.cancel();
     _fastCountTimer = null;
-  }
-
-  Future<void> _saveSession(BuildContext context, TasbeehState state) async {
-    await context.read<TasbeehCubit>().saveNow();
-    if (!context.mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(_t(state, 'session_saved'))));
   }
 
   Future<void> _confirmReset(BuildContext context, TasbeehState state) async {
@@ -130,516 +139,369 @@ class _TasbeehPageState extends State<TasbeehPage> {
     );
   }
 
+  Future<void> _openTargetSheet(
+    BuildContext context,
+    TasbeehState state, {
+    required String zikrId,
+  }) {
+    return showTargetSheet(
+      context: context,
+      title: _t(state, 'target_sheet_title'),
+      subtitle: _t(state, 'target_sheet_subtitle'),
+      selected: state.targetOf(zikrId),
+      onSelected: (int value) {
+        context.read<TasbeehCubit>().setTarget(zikrId, value);
+      },
+    );
+  }
+
+  Future<void> _openLanguageSheet(BuildContext context, TasbeehState state) {
+    return showLanguageSheet(
+      context: context,
+      title: _t(state, 'language_sheet_title'),
+      selectedCode: state.session.localeCode,
+      onSelected: context.read<TasbeehCubit>().setLocale,
+    );
+  }
+
+  int _streakDays(TasbeehState state) {
+    int streak = 0;
+    DateTime cursor = DateTime.now();
+
+    while (true) {
+      final String key = DayKey.fromDate(cursor);
+      final int value = state.session.dailyHistory[key] ?? 0;
+      if (value <= 0) {
+        break;
+      }
+      streak++;
+      cursor = cursor.subtract(const Duration(days: 1));
+    }
+
+    return streak;
+  }
+
+  int _totalAllTime(TasbeehState state) {
+    return AppConstants.zikrs.fold<int>(
+      0,
+      (int sum, ZikrMeta z) => sum + state.countOf(z.id),
+    );
+  }
+
+  String _titleForTab(TasbeehState state) {
+    switch (state.selectedTab) {
+      case 0:
+        return _t(state, 'tab_tasbeh');
+      case 1:
+        return _t(state, 'tab_zikrlar');
+      case 2:
+        return _t(state, 'tab_qibla');
+      case 3:
+        return _t(state, 'tab_stats');
+      case 4:
+        return _t(state, 'tab_settings');
+      default:
+        return _t(state, 'app_title');
+    }
+  }
+
+  Widget _tabBody(BuildContext context, TasbeehState state) {
+    final int activeCount = state.countOf(state.session.activeZikrId);
+    final int activeTarget = state.targetOf(state.session.activeZikrId);
+    final double progress = activeTarget <= 0
+        ? 0
+        : (activeCount / activeTarget).clamp(0, 1).toDouble();
+
+    switch (state.selectedTab) {
+      case 0:
+        final ZikrMeta activeMeta = _metaById(state.session.activeZikrId);
+        return TasbeehTab(
+          t: (String key) => _t(state, key),
+          activeLabel: _zikrLabel(state, state.session.activeZikrId),
+          activeArabic: activeMeta.arabicText,
+          activeCount: activeCount,
+          activeTarget: activeTarget,
+          progress: progress,
+          canUndo: state.undoAction != null,
+          onIncrement: () => _increment(context, auto: false),
+          onUndo: () => context.read<TasbeehCubit>().undo(),
+          onReset: () => _confirmReset(context, state),
+          onSelectTarget: () {
+            _openTargetSheet(
+              context,
+              state,
+              zikrId: state.session.activeZikrId,
+            );
+          },
+          onLongPressStart: (_) => _startFastCount(context),
+          onLongPressEnd: (_) => _stopFastCount(),
+          onLongPressCancel: _stopFastCount,
+        );
+      case 1:
+        return ZikrTab(
+          t: (String key) => _t(state, key),
+          items: AppConstants.zikrs.map((ZikrMeta zikr) {
+            return ZikrItemViewData(
+              id: zikr.id,
+              label: _t(state, zikr.labelKey),
+              arabic: zikr.arabicText,
+              count: state.countOf(zikr.id),
+              target: state.targetOf(zikr.id),
+              isActive: state.session.activeZikrId == zikr.id,
+            );
+          }).toList(),
+          onSelectZikr: (String id) {
+            context.read<TasbeehCubit>().selectZikr(id, openTasbeehTab: true);
+          },
+          onEditTarget: (String id) {
+            _openTargetSheet(context, state, zikrId: id);
+          },
+        );
+      case 2:
+        return QiblaTab(
+          t: (String key) => _t(state, key),
+          direction: AppConstants.qiblaDemoDirection,
+          distanceKm: AppConstants.qiblaDemoDistanceKm,
+        );
+      case 3:
+        return StatsTab(
+          t: (String key) => _t(state, key),
+          todayTotal: state.todayTotal,
+          weeklyTotal: state.weeklyTotal,
+          streakDays: _streakDays(state),
+          totalAllTime: _totalAllTime(state),
+          dailyHistory: state.session.dailyHistory,
+          zikrTotals: AppConstants.zikrs
+              .map(
+                (ZikrMeta z) =>
+                    (label: _t(state, z.labelKey), value: state.countOf(z.id)),
+              )
+              .toList(),
+        );
+      case 4:
+        return SettingsTab(
+          t: (String key) => _t(state, key),
+          themePreference: state.session.themePreference,
+          localeCode: state.session.localeCode,
+          vibrationEnabled: state.session.vibrationEnabled,
+          soundEnabled: state.session.soundEnabled,
+          dailyReminderEnabled: state.session.dailyReminderEnabled,
+          fridayReminderEnabled: state.session.fridayReminderEnabled,
+          onThemeChanged: context.read<TasbeehCubit>().setTheme,
+          onLanguageTap: () => _openLanguageSheet(context, state),
+          onVibrationChanged: context.read<TasbeehCubit>().setVibration,
+          onSoundChanged: context.read<TasbeehCubit>().setSound,
+          onDailyReminderChanged: context.read<TasbeehCubit>().setDailyReminder,
+          onFridayReminderChanged: context
+              .read<TasbeehCubit>()
+              .setFridayReminder,
+        );
+      default:
+        return const SizedBox.shrink();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return BlocBuilder<TasbeehCubit, TasbeehState>(
       builder: (BuildContext context, TasbeehState state) {
         if (state.isLoading) {
           return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
+            body: PremiumBackground(
+              child: Center(child: CircularProgressIndicator()),
+            ),
           );
         }
 
-        final int activeCount = state.countOf(state.session.activeZikrId);
-        final int activeTarget = state.targetOf(state.session.activeZikrId);
-        final double progress = activeTarget <= 0
-            ? 0
-            : (activeCount / activeTarget).clamp(0, 1).toDouble();
-
         return Scaffold(
-          appBar: AppBar(title: Text(_t(state, 'app_title'))),
-          body: IndexedStack(
-            index: state.selectedTab,
-            children: <Widget>[
-              _buildTasbehTab(
-                context,
-                state,
-                activeCount: activeCount,
-                activeTarget: activeTarget,
-                progress: progress,
-              ),
-              _buildZikrTab(context, state),
-              _buildQiblaTab(state),
-              _buildStatsTab(state),
-              _buildSettingsTab(context, state),
-            ],
+          appBar: AppBar(
+            title: Text(_titleForTab(state)),
+            forceMaterialTransparency: true,
           ),
-          bottomNavigationBar: NavigationBar(
-            selectedIndex: state.selectedTab,
-            onDestinationSelected: context.read<TasbeehCubit>().selectTab,
-            destinations: <NavigationDestination>[
-              NavigationDestination(
-                icon: const Icon(Icons.touch_app_outlined),
-                selectedIcon: const Icon(Icons.touch_app),
-                label: _t(state, 'tab_tasbeh'),
+          extendBodyBehindAppBar: false,
+          body: PremiumBackground(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 280),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: (Widget child, Animation<double> animation) {
+                return FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(
+                    position: Tween<Offset>(
+                      begin: const Offset(0.04, 0),
+                      end: Offset.zero,
+                    ).animate(animation),
+                    child: child,
+                  ),
+                );
+              },
+              child: KeyedSubtree(
+                key: ValueKey<int>(state.selectedTab),
+                child: _tabBody(context, state),
               ),
-              NavigationDestination(
-                icon: const Icon(Icons.list_alt_outlined),
-                selectedIcon: const Icon(Icons.list_alt),
-                label: _t(state, 'tab_zikrlar'),
-              ),
-              NavigationDestination(
-                icon: const Icon(Icons.explore_outlined),
-                selectedIcon: const Icon(Icons.explore),
-                label: _t(state, 'tab_qibla'),
-              ),
-              NavigationDestination(
-                icon: const Icon(Icons.bar_chart_outlined),
-                selectedIcon: const Icon(Icons.bar_chart),
-                label: _t(state, 'tab_stats'),
-              ),
-              NavigationDestination(
-                icon: const Icon(Icons.settings_outlined),
-                selectedIcon: const Icon(Icons.settings),
-                label: _t(state, 'tab_settings'),
-              ),
-            ],
+            ),
+          ),
+          bottomNavigationBar: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+            child: _PremiumBottomNav(
+              selectedIndex: state.selectedTab,
+              onTap: (int index) {
+                context.read<TasbeehCubit>().selectTab(index);
+              },
+              items: <_BottomNavItem>[
+                _BottomNavItem(
+                  label: _t(state, 'tab_tasbeh'),
+                  icon: Icons.touch_app_outlined,
+                  selectedIcon: Icons.touch_app,
+                ),
+                _BottomNavItem(
+                  label: _t(state, 'tab_zikrlar'),
+                  icon: Icons.list_alt_outlined,
+                  selectedIcon: Icons.list_alt,
+                ),
+                _BottomNavItem(
+                  label: _t(state, 'tab_qibla'),
+                  icon: Icons.explore_outlined,
+                  selectedIcon: Icons.explore,
+                ),
+                _BottomNavItem(
+                  label: _t(state, 'tab_stats'),
+                  icon: Icons.bar_chart_outlined,
+                  selectedIcon: Icons.bar_chart,
+                ),
+                _BottomNavItem(
+                  label: _t(state, 'tab_settings'),
+                  icon: Icons.settings_outlined,
+                  selectedIcon: Icons.settings,
+                ),
+              ],
+            ),
           ),
         );
       },
     );
   }
+}
 
-  Widget _buildTasbehTab(
-    BuildContext context,
-    TasbeehState state, {
-    required int activeCount,
-    required int activeTarget,
-    required double progress,
-  }) {
-    return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      '${_t(state, 'current_zikr')}: '
-                      '${_zikrLabel(state, state.session.activeZikrId)}',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '${_t(state, 'count')}: $activeCount',
-                      style: Theme.of(context).textTheme.headlineMedium,
-                    ),
-                    const SizedBox(height: 8),
-                    Text('${_t(state, 'target')}: $activeTarget'),
-                    const SizedBox(height: 8),
-                    LinearProgressIndicator(value: progress),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${(progress * 100).toStringAsFixed(0)}% '
-                      '${_t(state, 'progress')}',
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(_t(state, 'set_target')),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: AppConstants.targetOptions.map((int value) {
-                        return ChoiceChip(
-                          label: Text('$value'),
-                          selected: activeTarget == value,
-                          onSelected: (_) {
-                            context.read<TasbeehCubit>().setTarget(
-                              state.session.activeZikrId,
-                              value,
-                            );
-                          },
-                        );
-                      }).toList(),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Center(
-              child: GestureDetector(
-                onTap: () => _increment(context, auto: false),
-                onLongPressStart: (_) => _startFastCount(context),
-                onLongPressEnd: (_) => _stopFastCount(),
-                onLongPressCancel: _stopFastCount,
-                child: Container(
-                  width: 220,
-                  height: 220,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Theme.of(context).colorScheme.primaryContainer,
-                    boxShadow: <BoxShadow>[
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.15),
-                        blurRadius: 14,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: <Widget>[
-                      Text(
-                        '+1',
-                        style: Theme.of(context).textTheme.displaySmall
-                            ?.copyWith(fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(_t(state, 'tap_hint')),
-                      Text(_t(state, 'long_press_hint')),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: <Widget>[
-                FilledButton.icon(
-                  onPressed: state.undoAction == null
-                      ? null
-                      : () => context.read<TasbeehCubit>().undo(),
-                  icon: const Icon(Icons.undo),
-                  label: Text(_t(state, 'undo')),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () => _confirmReset(context, state),
-                  icon: const Icon(Icons.restart_alt),
-                  label: Text(_t(state, 'reset')),
-                ),
-                TextButton.icon(
-                  onPressed: () => _saveSession(context, state),
-                  icon: const Icon(Icons.save_outlined),
-                  label: Text(_t(state, 'save_session')),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _t(state, 'session_auto_saved'),
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 16),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      _t(state, 'mini_duas'),
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 8),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.wb_sunny_outlined),
-                      title: Text(_t(state, 'dua_of_day')),
-                    ),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.bedtime_outlined),
-                      title: Text(_t(state, 'before_sleep')),
-                    ),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.mosque_outlined),
-                      title: Text(_t(state, 'after_prayer')),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+class _PremiumBottomNav extends StatelessWidget {
+  const _PremiumBottomNav({
+    required this.selectedIndex,
+    required this.items,
+    required this.onTap,
+  });
+
+  final int selectedIndex;
+  final List<_BottomNavItem> items;
+  final ValueChanged<int> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool dark = Theme.of(context).brightness == Brightness.dark;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(26),
+      child: Container(
+        decoration: BoxDecoration(
+          color: dark
+              ? Colors.black.withValues(alpha: 0.34)
+              : Colors.white.withValues(alpha: 0.84),
+          borderRadius: BorderRadius.circular(26),
+          border: Border.all(
+            color: dark
+                ? Colors.white.withValues(alpha: 0.1)
+                : AppPalette.primary.withValues(alpha: 0.14),
+            width: 1,
+          ),
         ),
-      ),
-    );
-  }
+        child: SafeArea(
+          top: false,
+          minimum: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          child: Row(
+            children: List<Widget>.generate(items.length, (int index) {
+              final _BottomNavItem item = items[index];
+              final bool selected = index == selectedIndex;
 
-  Widget _buildZikrTab(BuildContext context, TasbeehState state) {
-    return SafeArea(
-      child: ListView.separated(
-        padding: const EdgeInsets.all(16),
-        itemCount: AppConstants.zikrIds.length,
-        separatorBuilder: (_, _) => const SizedBox(height: 8),
-        itemBuilder: (BuildContext context, int index) {
-          final String zikrId = AppConstants.zikrIds[index];
-          final int count = state.countOf(zikrId);
-          final int currentTarget = state.targetOf(zikrId);
-          final int dropdownTarget =
-              AppConstants.targetOptions.contains(currentTarget)
-              ? currentTarget
-              : AppConstants.targetOptions.first;
-          final bool isActive = state.session.activeZikrId == zikrId;
-
-          return Card(
-            child: ListTile(
-              onTap: () => context.read<TasbeehCubit>().selectZikr(
-                zikrId,
-                openTasbeehTab: true,
-              ),
-              title: Text(_zikrLabel(state, zikrId)),
-              subtitle: Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Row(
-                  children: <Widget>[
-                    Text('${_t(state, 'count')}: $count'),
-                    const SizedBox(width: 16),
-                    Text('${_t(state, 'target')}:'),
-                    const SizedBox(width: 8),
-                    DropdownButton<int>(
-                      value: dropdownTarget,
-                      items: AppConstants.targetOptions.map((int value) {
-                        return DropdownMenuItem<int>(
-                          value: value,
-                          child: Text('$value'),
-                        );
-                      }).toList(),
-                      onChanged: (int? value) {
-                        if (value != null) {
-                          context.read<TasbeehCubit>().setTarget(zikrId, value);
-                        }
-                      },
-                    ),
-                  ],
-                ),
-              ),
-              trailing: isActive
-                  ? Chip(
-                      avatar: const Icon(Icons.check, size: 16),
-                      label: Text(_t(state, 'active')),
-                    )
-                  : const Icon(Icons.chevron_right),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildQiblaTab(TasbeehState state) {
-    return SafeArea(
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: <Widget>[
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Row(
-                    children: <Widget>[
-                      Icon(
-                        Icons.explore,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _t(state, 'qibla_title'),
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(_t(state, 'qibla_desc')),
-                  const SizedBox(height: 8),
-                  Text(
-                    _t(state, 'qibla_placeholder'),
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.schedule),
-              title: Text(_t(state, 'prayer_times')),
-              subtitle: Text(_t(state, 'coming_soon')),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.location_city),
-              title: Text(_t(state, 'nearby_mosques')),
-              subtitle: Text(_t(state, 'coming_soon')),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatsTab(TasbeehState state) {
-    return SafeArea(
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: <Widget>[
-          _statCard(state, _t(state, 'stats_today'), state.todayTotal),
-          const SizedBox(height: 8),
-          _statCard(state, _t(state, 'stats_week'), state.weeklyTotal),
-          const SizedBox(height: 8),
-          _statCard(state, _t(state, 'stats_month'), state.monthlyTotal),
-          const SizedBox(height: 12),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.emoji_events_outlined),
-              title: Text(_t(state, 'most_used')),
-              subtitle: Text(
-                state.mostUsedZikr == null
-                    ? _t(state, 'no_data')
-                    : _zikrLabel(state, state.mostUsedZikr!),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: AppConstants.zikrIds.map((String id) {
-                  return Padding(
+              return Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: () => onTap(index),
+                  child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: <Widget>[
-                        Text(_zikrLabel(state, id)),
-                        Text('${state.countOf(id)}'),
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 220),
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: selected
+                                ? AppPalette.accent.withValues(alpha: 0.22)
+                                : Colors.transparent,
+                            boxShadow: selected
+                                ? <BoxShadow>[
+                                    BoxShadow(
+                                      color: AppPalette.accent.withValues(
+                                        alpha: 0.24,
+                                      ),
+                                      blurRadius: 10,
+                                    ),
+                                  ]
+                                : const <BoxShadow>[],
+                          ),
+                          child: Icon(
+                            selected ? item.selectedIcon : item.icon,
+                            size: 20,
+                            color: selected
+                                ? AppPalette.accent
+                                : (dark
+                                      ? Colors.white.withValues(alpha: 0.85)
+                                      : AppPalette.primary.withValues(
+                                          alpha: 0.75,
+                                        )),
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          item.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
+                                color: selected
+                                    ? AppPalette.accent
+                                    : (dark
+                                          ? Colors.white.withValues(alpha: 0.8)
+                                          : AppPalette.primary.withValues(
+                                              alpha: 0.78,
+                                            )),
+                                fontWeight: selected
+                                    ? FontWeight.w700
+                                    : FontWeight.w500,
+                              ),
+                        ),
                       ],
                     ),
-                  );
-                }).toList(),
-              ),
-            ),
+                  ),
+                ),
+              );
+            }),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _statCard(TasbeehState state, String label, int value) {
-    return Card(
-      child: ListTile(
-        title: Text(label),
-        trailing: Text(
-          '$value',
-          style: Theme.of(context).textTheme.headlineSmall,
         ),
       ),
     );
   }
+}
 
-  Widget _buildSettingsTab(BuildContext context, TasbeehState state) {
-    return SafeArea(
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: <Widget>[
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    _t(state, 'theme'),
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 8),
-                  SegmentedButton<ThemePreference>(
-                    segments: <ButtonSegment<ThemePreference>>[
-                      ButtonSegment<ThemePreference>(
-                        value: ThemePreference.system,
-                        label: Text(_t(state, 'theme_system')),
-                      ),
-                      ButtonSegment<ThemePreference>(
-                        value: ThemePreference.light,
-                        label: Text(_t(state, 'theme_light')),
-                      ),
-                      ButtonSegment<ThemePreference>(
-                        value: ThemePreference.dark,
-                        label: Text(_t(state, 'theme_dark')),
-                      ),
-                    ],
-                    selected: <ThemePreference>{state.session.themePreference},
-                    onSelectionChanged: (Set<ThemePreference> selected) {
-                      context.read<TasbeehCubit>().setTheme(selected.first);
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Card(
-            child: ListTile(
-              title: Text(_t(state, 'choose_lang')),
-              subtitle: Text(_t(state, 'language')),
-              trailing: DropdownButton<String>(
-                value: state.session.localeCode,
-                items: const <DropdownMenuItem<String>>[
-                  DropdownMenuItem<String>(value: 'uz', child: Text('Uzbek')),
-                  DropdownMenuItem<String>(value: 'tj', child: Text('Tojik')),
-                  DropdownMenuItem<String>(value: 'ru', child: Text('Русский')),
-                  DropdownMenuItem<String>(value: 'en', child: Text('English')),
-                ],
-                onChanged: (String? code) {
-                  if (code != null) {
-                    context.read<TasbeehCubit>().setLocale(code);
-                  }
-                },
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Card(
-            child: Column(
-              children: <Widget>[
-                SwitchListTile(
-                  value: state.session.vibrationEnabled,
-                  onChanged: context.read<TasbeehCubit>().setVibration,
-                  title: Text(_t(state, 'vibration')),
-                ),
-                SwitchListTile(
-                  value: state.session.soundEnabled,
-                  onChanged: context.read<TasbeehCubit>().setSound,
-                  title: Text(_t(state, 'sound')),
-                ),
-                SwitchListTile(
-                  value: state.session.dailyReminderEnabled,
-                  onChanged: context.read<TasbeehCubit>().setDailyReminder,
-                  title: Text(_t(state, 'reminder_daily')),
-                ),
-                SwitchListTile(
-                  value: state.session.fridayReminderEnabled,
-                  onChanged: context.read<TasbeehCubit>().setFridayReminder,
-                  title: Text(_t(state, 'reminder_friday')),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+class _BottomNavItem {
+  const _BottomNavItem({
+    required this.label,
+    required this.icon,
+    required this.selectedIcon,
+  });
+
+  final String label;
+  final IconData icon;
+  final IconData selectedIcon;
 }

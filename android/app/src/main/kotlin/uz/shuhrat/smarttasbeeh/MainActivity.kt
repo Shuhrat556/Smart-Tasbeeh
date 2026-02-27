@@ -1,4 +1,4 @@
-package com.example.smart_tasbeeh
+package uz.shuhrat.smarttasbeeh
 
 import io.flutter.embedding.android.FlutterActivity
 
